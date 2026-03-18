@@ -2,6 +2,7 @@ import { createServer, IncomingMessage, ServerResponse } from "node:http";
 import { sanitizedConfig } from "../config/index.js";
 import { AppConfig } from "../domain/types.js";
 import { Logger } from "../logging/logger.js";
+import { runRelayerIntegrityCheck } from "../services/relayerIntegrityService.js";
 import { ScanService } from "../services/scanService.js";
 
 interface ServerDeps {
@@ -38,7 +39,7 @@ async function routeRequest(
     return sendJson(res, 200, {
       name: "polymarket-asymmetry-bot",
       mode: deps.config.nodeEnv,
-      endpoints: ["/health", "/config", "/scan", "/scan/run"],
+      endpoints: ["/health", "/config", "/scan", "/scan/run", "/relayer-check"],
     });
   }
 
@@ -60,6 +61,26 @@ async function routeRequest(
     return sendJson(res, 200, result);
   }
 
+  if (method === "GET" && url.pathname === "/relayer-check") {
+    const expectedToken = process.env.RELAYER_CHECK_TOKEN;
+    if (expectedToken) {
+      const providedToken = url.searchParams.get("token") ?? getBearerToken(req.headers["authorization"]);
+      if (!providedToken || providedToken !== expectedToken) {
+        return sendJson(res, 401, { error: "unauthorized" });
+      }
+    }
+
+    try {
+      const result = await runRelayerIntegrityCheck();
+      return sendJson(res, 200, result);
+    } catch (error) {
+      return sendJson(res, 500, {
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   return sendJson(res, 404, { error: "not_found" });
 }
 
@@ -68,5 +89,16 @@ function sendJson(res: ServerResponse, statusCode: number, body: unknown): void 
   res.statusCode = statusCode;
   res.setHeader("content-type", "application/json; charset=utf-8");
   res.end(payload);
+}
+
+function getBearerToken(header?: string): string | null {
+  if (!header) {
+    return null;
+  }
+  const [scheme, token] = header.split(" ");
+  if (!scheme || scheme.toLowerCase() !== "bearer" || !token) {
+    return null;
+  }
+  return token.trim();
 }
 
